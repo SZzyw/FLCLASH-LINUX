@@ -218,15 +218,6 @@ func TestGroupDelay(a *app.App, groupName, testUrl string) error {
 	return nil
 }
 
-func TestAllGroupsDelay(a *app.App, testUrl string) {
-	groups := a.State.GetGroups()
-	for _, g := range groups {
-		fmt.Printf("  测试 %s...\n", g.Name)
-		TestGroupDelay(a, g.Name, testUrl)
-	}
-	fmt.Println("  全部测试完成。")
-}
-
 func getStringField(m map[string]interface{}, field string) string {
 	if v, ok := m[field].(string); ok {
 		return v

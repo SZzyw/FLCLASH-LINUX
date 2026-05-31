@@ -57,15 +57,6 @@ func (m *ProfilesManifest) RemoveProfile(id int64) {
 	}
 }
 
-func (m *ProfilesManifest) UpdateProfile(p ProfileRecord) {
-	for i := range m.Profiles {
-		if m.Profiles[i].ID == p.ID {
-			m.Profiles[i] = p
-			return
-		}
-	}
-}
-
 func (m *ProfilesManifest) SetCurrent(id int64) {
 	m.CurrentProfileID = id
 }

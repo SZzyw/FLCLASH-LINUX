@@ -11,7 +11,6 @@ import (
 type StateStore struct {
 	mu     sync.RWMutex
 	prefs  *model.RuntimePrefs
-	dirty  bool
 }
 
 func NewStateStore() *StateStore {
@@ -68,21 +67,6 @@ func (s *StateStore) Save() error {
 	return os.WriteFile(StateFilePath(), data, 0644)
 }
 
-func (s *StateStore) SaveIfDirty() error {
-	s.mu.RLock()
-	if !s.dirty {
-		s.mu.RUnlock()
-		return nil
-	}
-	s.mu.RUnlock()
-
-	s.mu.Lock()
-	s.dirty = false
-	s.mu.Unlock()
-
-	return s.Save()
-}
-
 func (s *StateStore) Get() *model.RuntimePrefs {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -93,40 +77,28 @@ func (s *StateStore) SetCurrentProfileID(id int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.prefs.CurrentProfileID = id
-	s.dirty = true
 }
 
 func (s *StateStore) SetMode(mode model.Mode) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.prefs.Mode = mode
-	s.dirty = true
 }
 
 func (s *StateStore) SetTunEnabled(enabled bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.prefs.TunEnabled = enabled
-	s.dirty = true
-}
-
-func (s *StateStore) SetSystemProxy(enabled bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.prefs.SystemProxy = enabled
-	s.dirty = true
 }
 
 func (s *StateStore) SetSelectedMap(selectedMap map[string]string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.prefs.SelectedMap = selectedMap
-	s.dirty = true
 }
 
 func (s *StateStore) SetLastRunning(running bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.prefs.LastRunning = running
-	s.dirty = true
 }

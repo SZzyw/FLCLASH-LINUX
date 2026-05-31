@@ -3,6 +3,7 @@ package action
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"flclash-headless/app"
 	"flclash-headless/configbuilder"
@@ -76,7 +77,7 @@ func StartCore(a *app.App) error {
 	a.CoreClient.StartLog()
 	_ = EnsureGlobalProxySelected(a)
 	a.State.SetCoreStatus(coreclient.StatusRunning)
-	a.State.CoreStartTime = model.TimeNow()
+	a.State.CoreStartTime = time.Now()
 	a.StateStore.SetLastRunning(true)
 
 	return nil

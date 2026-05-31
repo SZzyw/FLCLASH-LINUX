@@ -11,15 +11,12 @@ import (
 type RuntimeState struct {
 	mu            sync.RWMutex
 	CoreStatus    coreclient.CoreStatus
-	CoreConnected bool
 	CoreStartTime time.Time
 	Traffic       model.TrafficSnapshot
 	TotalTraffic  model.TotalTraffic
 	Groups        []model.GroupSummary
 	GroupDetails  map[string]*model.GroupDetail
 	Logs          []model.LogEntry
-	LastError     string
-	MessageText   string
 }
 
 func NewRuntimeState() *RuntimeState {
@@ -40,12 +37,6 @@ func (rs *RuntimeState) SetCoreStatus(s coreclient.CoreStatus) {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
 	rs.CoreStatus = s
-}
-
-func (rs *RuntimeState) IsCoreRunning() bool {
-	rs.mu.RLock()
-	defer rs.mu.RUnlock()
-	return rs.CoreConnected && rs.CoreStatus == coreclient.StatusRunning
 }
 
 func (rs *RuntimeState) AddLog(entry model.LogEntry) {
@@ -113,16 +104,4 @@ func (rs *RuntimeState) GetTotalTraffic() model.TotalTraffic {
 	rs.mu.RLock()
 	defer rs.mu.RUnlock()
 	return rs.TotalTraffic
-}
-
-func (rs *RuntimeState) SetMessage(text string) {
-	rs.mu.Lock()
-	defer rs.mu.Unlock()
-	rs.MessageText = text
-}
-
-func (rs *RuntimeState) GetMessage() string {
-	rs.mu.RLock()
-	defer rs.mu.RUnlock()
-	return rs.MessageText
 }

@@ -11,7 +11,6 @@ import (
 type ProfileStore struct {
 	mu       sync.RWMutex
 	manifest *model.ProfilesManifest
-	dirty    bool
 }
 
 func NewProfileStore() *ProfileStore {
@@ -62,21 +61,6 @@ func (ps *ProfileStore) Save() error {
 	return os.WriteFile(ProfilesFilePath(), data, 0644)
 }
 
-func (ps *ProfileStore) SaveIfDirty() error {
-	ps.mu.RLock()
-	if !ps.dirty {
-		ps.mu.RUnlock()
-		return nil
-	}
-	ps.mu.RUnlock()
-
-	ps.mu.Lock()
-	ps.dirty = false
-	ps.mu.Unlock()
-
-	return ps.Save()
-}
-
 func (ps *ProfileStore) GetManifest() *model.ProfilesManifest {
 	ps.mu.RLock()
 	defer ps.mu.RUnlock()
@@ -87,26 +71,16 @@ func (ps *ProfileStore) AddProfile(p model.ProfileRecord) {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 	ps.manifest.AddProfile(p)
-	ps.dirty = true
 }
 
 func (ps *ProfileStore) RemoveProfile(id int64) {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 	ps.manifest.RemoveProfile(id)
-	ps.dirty = true
-}
-
-func (ps *ProfileStore) UpdateProfile(p model.ProfileRecord) {
-	ps.mu.Lock()
-	defer ps.mu.Unlock()
-	ps.manifest.UpdateProfile(p)
-	ps.dirty = true
 }
 
 func (ps *ProfileStore) SetCurrent(id int64) {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 	ps.manifest.SetCurrent(id)
-	ps.dirty = true
 }

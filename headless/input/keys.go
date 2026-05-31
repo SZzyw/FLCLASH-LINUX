@@ -16,16 +16,11 @@ func ensureReader() *bufio.Reader {
 	return globalReader
 }
 
-func ResetReader() {
-	globalReader = nil
-}
-
 type InputResult struct {
 	Command string
 	Text    string
 	Number  int
 	IsNum   bool
-	Confirm *bool
 }
 
 func ReadLine() (string, error) {
@@ -60,12 +55,6 @@ func ReadInput() *InputResult {
 	return result
 }
 
-func ReadText(prompt string) string {
-	fmt.Print(prompt)
-	text, _ := ReadLine()
-	return strings.TrimSpace(text)
-}
-
 func ReadConfirm(defaultYes bool) bool {
 	text, _ := ReadLine()
 	text = strings.TrimSpace(strings.ToLower(text))
@@ -73,16 +62,6 @@ func ReadConfirm(defaultYes bool) bool {
 		return defaultYes
 	}
 	return text == "y" || text == "yes"
-}
-
-func ReadNotEmpty(prompt string) string {
-	for {
-		text := ReadText(prompt)
-		if text != "" {
-			return text
-		}
-		fmt.Println("  输入不能为空，请重新输入。")
-	}
 }
 
 func parseInt(s string) (int, error) {

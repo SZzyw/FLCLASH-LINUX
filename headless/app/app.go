@@ -6,8 +6,7 @@ import (
 )
 
 type App struct {
-	State         *RuntimeState
-	PageStack     *PageStack
+	State        *RuntimeState
 	ProfileStore  *storage.ProfileStore
 	StateStore    *storage.StateStore
 	CoreClient    *coreclient.Client
@@ -16,7 +15,6 @@ type App struct {
 func New() *App {
 	return &App{
 		State:        NewRuntimeState(),
-		PageStack:    NewPageStack(),
 		ProfileStore: storage.NewProfileStore(),
 		StateStore:   storage.NewStateStore(),
 	}
@@ -37,8 +35,4 @@ func (a *App) InitStorage() error {
 
 func (a *App) InitCoreClient(corePath string) {
 	a.CoreClient = coreclient.NewClient(corePath, storage.GetDataDir())
-}
-
-func (a *App) GetCurrentProfile() *storage.ProfileStore {
-	return a.ProfileStore
 }

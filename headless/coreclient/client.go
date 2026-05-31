@@ -258,22 +258,6 @@ func (c *Client) SetupConfig(selectedMap map[string]string, testURL string) erro
 	return nil
 }
 
-func (c *Client) UpdateConfig(params UpdateParams) error {
-	paramsBytes, _ := json.Marshal(params)
-	action := NewAction(ActionUpdateConfig, string(paramsBytes))
-	result, err := c.SendAction(action, 10*time.Second)
-	if err != nil {
-		return err
-	}
-	if result.Code == ResultError {
-		return fmt.Errorf("update config failed: %v", result.Data)
-	}
-	if msg, ok := result.Data.(string); ok && msg != "" {
-		return fmt.Errorf("update config failed: %s", msg)
-	}
-	return nil
-}
-
 func (c *Client) ValidateConfig(path string) (string, error) {
 	action := NewAction(ActionValidateConfig, path)
 	result, err := c.SendAction(action, 10*time.Second)
@@ -407,36 +391,6 @@ func (c *Client) Shutdown() error {
 	return err
 }
 
-func (c *Client) CloseConnections() error {
-	action := NewAction(ActionCloseConnections, nil)
-	_, err := c.SendAction(action, 5*time.Second)
-	return err
-}
-
-func (c *Client) ResetTraffic() error {
-	action := NewAction(ActionResetTraffic, nil)
-	_, err := c.SendAction(action, 5*time.Second)
-	return err
-}
-
-func (c *Client) GetConnections() (interface{}, error) {
-	action := NewAction(ActionGetConnections, nil)
-	result, err := c.SendAction(action, 5*time.Second)
-	if err != nil {
-		return nil, err
-	}
-	return result.Data, nil
-}
-
-func (c *Client) GetConfig(path string) (interface{}, error) {
-	action := NewAction(ActionGetConfig, path)
-	result, err := c.SendAction(action, 10*time.Second)
-	if err != nil {
-		return nil, err
-	}
-	return result.Data, nil
-}
-
 func (c *Client) TestDelay(url, proxyName string) (int, error) {
 	params := DelayParams{
 		ProxyName: proxyName,
@@ -462,4 +416,3 @@ func (c *Client) TestDelay(url, proxyName string) (int, error) {
 	}
 	return delay.Value, nil
 }
-

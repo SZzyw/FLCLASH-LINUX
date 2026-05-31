@@ -13,10 +13,6 @@ import (
 	"flclash-headless/util"
 )
 
-func ImportFromURL(profileStore *storage.ProfileStore, url, name string, autoApply bool) (*model.ProfileRecord, error) {
-	return ImportFromURLWithProxy(profileStore, url, name, autoApply, "")
-}
-
 func ImportFromURLWithProxy(profileStore *storage.ProfileStore, url, name string, autoApply bool, proxyURL string) (*model.ProfileRecord, error) {
 	fmt.Println("  正在下载订阅...")
 
