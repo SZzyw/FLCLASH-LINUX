@@ -1,10 +1,12 @@
 # FlClash - Linux 无图形终端代理客户端
 
+> **部署包下载**: [github.com/SZzyw/FLCLASH-LINUX-project](https://github.com/SZzyw/FLCLASH-LINUX-project)
+
+
 ![Screenshot](https://zhaoyingwei.dpdns.org/unimportant/20260528181800301.png)
 
 FlClash 是一款基于 [Clash.Meta](https://github.com/MetaCubeX/Clash.Meta) 内核的 **Linux 纯终端代理客户端**，采用双进程架构，无需桌面环境即可运行。适用于服务器、开发机、ARM 设备等无 GUI 场景。
 
-> **打包下载**: [github.com/SZzyw/FLCLASH-LINUX-project](https://github.com/SZzyw/FLCLASH-LINUX-project)
 
 ## 架构概览
 
