@@ -1,0 +1,893 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"log"
+	"net"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"strings"
+	"syscall"
+	"time"
+
+	"flclash-headless/action"
+	"flclash-headless/app"
+	"flclash-headless/coreclient"
+	"flclash-headless/model"
+	"flclash-headless/storage"
+	"flclash-headless/util"
+)
+
+const SocketName = "flclash.sock"
+
+func socketPath() string {
+	return filepath.Join(storage.GetDataDir(), SocketName)
+}
+
+type DaemonMethod string
+
+const (
+	MethodStatus         DaemonMethod = "status"
+	MethodStart          DaemonMethod = "start"
+	MethodStop           DaemonMethod = "stop"
+	MethodGlobal         DaemonMethod = "global"
+	MethodTun            DaemonMethod = "tun"
+	MethodLogs           DaemonMethod = "logs"
+	MethodRestart        DaemonMethod = "restart"
+	MethodGroups         DaemonMethod = "groups"
+	MethodSwitchNode     DaemonMethod = "switch_node"
+	MethodTestGroupDelay DaemonMethod = "test_group_delay"
+	MethodMode           DaemonMethod = "mode"
+	MethodImportURL      DaemonMethod = "import_url"
+	MethodImportFile     DaemonMethod = "import_file"
+	MethodUpdateSub      DaemonMethod = "update_subscription"
+	MethodProfiles       DaemonMethod = "profiles"
+	MethodSwitchProfile  DaemonMethod = "switch_profile"
+	MethodDeleteProfile  DaemonMethod = "delete_profile"
+)
+
+type DaemonRequest struct {
+	Method DaemonMethod    `json:"method"`
+	Params json.RawMessage `json:"params,omitempty"`
+}
+
+type DaemonResponse struct {
+	Code  int         `json:"code"`
+	Data  interface{} `json:"data,omitempty"`
+	Error string      `json:"error,omitempty"`
+}
+
+type GlobalParams struct {
+	Name string `json:"name"`
+}
+
+type TunParams struct {
+	Enable bool `json:"enable"`
+}
+
+type SwitchNodeParams struct {
+	GroupName string `json:"group_name"`
+	ProxyName string `json:"proxy_name"`
+}
+
+type TestGroupDelayParams struct {
+	GroupName string `json:"group_name"`
+	TestURL   string `json:"test_url"`
+}
+
+type ModeParams struct {
+	Mode string `json:"mode"`
+}
+
+type ImportURLParams struct {
+	URL       string `json:"url"`
+	Name      string `json:"name"`
+	AutoApply bool   `json:"auto_apply"`
+}
+
+type ImportFileParams struct {
+	Path      string `json:"path"`
+	Name      string `json:"name"`
+	AutoApply bool   `json:"auto_apply"`
+}
+
+type UpdateSubscriptionParams struct {
+	AutoApply bool `json:"auto_apply"`
+}
+
+type SwitchProfileParams struct {
+	ProfileID int64 `json:"profile_id"`
+}
+
+type DeleteProfileParams struct {
+	ProfileID int64 `json:"profile_id"`
+}
+
+type StatusData struct {
+	Running     bool   `json:"running"`
+	CoreRunning bool   `json:"core_running"`
+	Uptime      string `json:"uptime,omitempty"`
+	Mode        string `json:"mode"`
+	TunEnabled  bool   `json:"tun_enabled"`
+	ProfileName string `json:"profile_name,omitempty"`
+	GlobalNow   string `json:"global_now,omitempty"`
+}
+
+type GroupsData struct {
+	Groups        []model.GroupSummary          `json:"groups"`
+	Details       map[string]*model.GroupDetail `json:"details"`
+	GlobalOptions []model.GroupNode             `json:"global_options,omitempty"`
+}
+
+type ProfileSummaryData struct {
+	ID      int64             `json:"id"`
+	Name    string            `json:"name"`
+	Type    model.ProfileType `json:"type"`
+	Source  string            `json:"source"`
+	Current bool              `json:"current"`
+}
+
+type ProfilesData struct {
+	CurrentProfileID   int64                `json:"current_profile_id"`
+	CurrentProfileName string               `json:"current_profile_name,omitempty"`
+	Profiles           []ProfileSummaryData `json:"profiles"`
+}
+
+func runDaemon() {
+	a := app.New()
+	util.SetHostname(getHostname())
+
+	log.Println("FlClash Headless Daemon 启动中...")
+
+	if err := a.InitStorage(); err != nil {
+		log.Fatalf("初始化存储失败: %v", err)
+	}
+
+	prefs := a.StateStore.Get()
+	if prefs.LastRunning {
+		if err := action.StartCore(a); err != nil {
+			log.Printf("启动核心失败: %v", err)
+		}
+	}
+
+	_ = removeSocket(socketPath())
+	listener, err := net.Listen("unix", socketPath())
+	if err != nil {
+		log.Fatalf("无法创建 Unix socket: %v", err)
+	}
+	defer listener.Close()
+	if err := os.Chmod(socketPath(), 0777); err != nil {
+		log.Printf("警告: 无法设置 socket 权限: %v", err)
+	}
+	log.Printf("Unix socket 监听于 %s", socketPath())
+
+	go daemonRefreshLoop(a)
+	go daemonSignalHandler(a)
+
+	log.Println("FlClash Headless Daemon 已启动")
+
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			log.Printf("接受连接失败: %v", err)
+			continue
+		}
+		go handleDaemonConn(a, conn)
+	}
+}
+
+func daemonRefreshLoop(a *app.App) {
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		if isCoreRunning(a) {
+			if err := action.RefreshGroups(a); err != nil {
+				log.Printf("RefreshGroups error: %v", err)
+			}
+		}
+	}
+}
+
+func daemonSignalHandler(a *app.App) {
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	<-sigCh
+	log.Println("正在关闭 daemon...")
+	a.StateStore.Save()
+	a.ProfileStore.Save()
+	if a.CoreClient != nil {
+		a.CoreClient.Shutdown()
+		a.CoreClient.Stop()
+	}
+	_ = removeSocket(socketPath())
+	os.Exit(0)
+}
+
+func handleDaemonConn(a *app.App, conn net.Conn) {
+	defer conn.Close()
+
+	var req DaemonRequest
+	decoder := json.NewDecoder(conn)
+	if err := decoder.Decode(&req); err != nil {
+		writeError(conn, "无效请求: "+err.Error())
+		return
+	}
+
+	switch req.Method {
+	case MethodStatus:
+		handleStatus(conn, a)
+	case MethodStart:
+		handleStart(conn, a)
+	case MethodStop:
+		handleStop(conn, a)
+	case MethodGlobal:
+		handleGlobal(conn, a, req.Params)
+	case MethodTun:
+		handleTun(conn, a, req.Params)
+	case MethodLogs:
+		handleLogs(conn, a)
+	case MethodRestart:
+		handleRestart(conn, a)
+	case MethodGroups:
+		handleGroups(conn, a)
+	case MethodSwitchNode:
+		handleSwitchNode(conn, a, req.Params)
+	case MethodTestGroupDelay:
+		handleTestGroupDelay(conn, a, req.Params)
+	case MethodMode:
+		handleMode(conn, a, req.Params)
+	case MethodImportURL:
+		handleImportURL(conn, a, req.Params)
+	case MethodImportFile:
+		handleImportFile(conn, a, req.Params)
+	case MethodUpdateSub:
+		handleUpdateSubscription(conn, a, req.Params)
+	case MethodProfiles:
+		handleProfiles(conn, a)
+	case MethodSwitchProfile:
+		handleSwitchProfile(conn, a, req.Params)
+	case MethodDeleteProfile:
+		handleDeleteProfile(conn, a, req.Params)
+	default:
+		writeError(conn, "未知方法: "+string(req.Method))
+	}
+}
+
+func handleStatus(conn net.Conn, a *app.App) {
+	data := StatusData{
+		Running:     true,
+		CoreRunning: isCoreRunning(a),
+	}
+
+	prefs := a.StateStore.Get()
+	data.Mode = string(prefs.Mode)
+	data.TunEnabled = prefs.TunEnabled
+
+	if profile := a.ProfileStore.GetManifest().GetCurrentProfile(); profile != nil {
+		data.ProfileName = profile.Name
+	}
+
+	if data.CoreRunning {
+		groups := a.State.GetGroups()
+		for _, g := range groups {
+			if g.Name == "GLOBAL" {
+				data.GlobalNow = g.Now
+				break
+			}
+		}
+		if a.CoreClient != nil {
+			up := a.CoreClient.Uptime()
+			data.Uptime = util.FormatDuration(up)
+		}
+	}
+
+	writeJSON(conn, DaemonResponse{Code: 0, Data: data})
+}
+
+func handleStart(conn net.Conn, a *app.App) {
+	if isCoreRunning(a) {
+		writeJSON(conn, DaemonResponse{Code: 0, Data: "核心已在运行中"})
+		return
+	}
+	if err := action.StartCore(a); err != nil {
+		writeError(conn, "启动核心失败: "+err.Error())
+		return
+	}
+	a.StateStore.Save()
+	writeJSON(conn, DaemonResponse{Code: 0, Data: "核心已启动"})
+}
+
+func handleStop(conn net.Conn, a *app.App) {
+	if isCoreRunning(a) {
+		if err := action.StopCore(a); err != nil {
+			writeError(conn, "停止核心失败: "+err.Error())
+			return
+		}
+	} else if a.CoreClient != nil {
+		_ = a.CoreClient.Stop()
+	}
+	a.State.SetCoreStatus(coreclient.StatusStopped)
+	a.StateStore.SetLastRunning(false)
+	a.StateStore.Save()
+	writeJSON(conn, DaemonResponse{Code: 0, Data: "核心已停止"})
+}
+
+func handleRestart(conn net.Conn, a *app.App) {
+	if isCoreRunning(a) {
+		if err := action.StopCore(a); err != nil {
+			writeError(conn, "停止核心失败: "+err.Error())
+			return
+		}
+	}
+	if err := action.StartCore(a); err != nil {
+		writeError(conn, "重启核心失败: "+err.Error())
+		return
+	}
+	a.StateStore.Save()
+	writeJSON(conn, DaemonResponse{Code: 0, Data: "核心已重启"})
+}
+
+func handleGlobal(conn net.Conn, a *app.App, raw json.RawMessage) {
+	if !isCoreRunning(a) {
+		writeError(conn, "核心未运行，无法切换全局出口")
+		return
+	}
+	var params GlobalParams
+	if err := json.Unmarshal(raw, &params); err != nil {
+		writeError(conn, "参数错误: "+err.Error())
+		return
+	}
+	if err := action.SwitchGlobalExit(a, params.Name); err != nil {
+		writeError(conn, "切换失败: "+err.Error())
+		return
+	}
+	writeJSON(conn, DaemonResponse{Code: 0, Data: fmt.Sprintf("全局出口已切换至: %s", params.Name)})
+}
+
+func handleTun(conn net.Conn, a *app.App, raw json.RawMessage) {
+	var params TunParams
+	if err := json.Unmarshal(raw, &params); err != nil {
+		writeError(conn, "参数错误: "+err.Error())
+		return
+	}
+
+	prefs := a.StateStore.Get()
+	old := prefs.TunEnabled
+	if old == params.Enable {
+		status := "关闭"
+		if params.Enable {
+			status = "开启"
+		}
+		writeJSON(conn, DaemonResponse{Code: 0, Data: fmt.Sprintf("TUN 已经是%s状态", status)})
+		return
+	}
+
+	a.StateStore.SetTunEnabled(params.Enable)
+	if err := a.StateStore.Save(); err != nil {
+		writeError(conn, "保存 TUN 状态失败: "+err.Error())
+		return
+	}
+
+	wasRunning := isCoreRunning(a)
+	if wasRunning {
+		if err := action.StopCore(a); err != nil {
+			a.StateStore.SetTunEnabled(old)
+			a.StateStore.Save()
+			writeError(conn, "停止核心失败，已回滚 TUN 状态: "+err.Error())
+			return
+		}
+		if err := action.StartCore(a); err != nil {
+			a.StateStore.SetTunEnabled(old)
+			a.StateStore.Save()
+			if restoreErr := action.StartCore(a); restoreErr != nil {
+				writeError(conn, fmt.Sprintf("重启核心失败，TUN 未生效；已回滚配置但恢复核心也失败: %v; 原错误: %v", restoreErr, err))
+				return
+			}
+			writeError(conn, "重启核心失败，TUN 未生效；已回滚到原 TUN 状态: "+err.Error())
+			return
+		}
+	}
+
+	status := "关闭"
+	if params.Enable {
+		status = "开启"
+	}
+	writeJSON(conn, DaemonResponse{Code: 0, Data: fmt.Sprintf("TUN 已%s", status)})
+}
+
+func handleLogs(conn net.Conn, a *app.App) {
+	logs := a.State.GetLogs()
+	filtered := make([]model.LogEntry, 0, 100)
+	for i := len(logs) - 1; i >= 0 && len(filtered) < 100; i-- {
+		if isKeyLog(logs[i]) {
+			filtered = append(filtered, logs[i])
+		}
+	}
+	for i, j := 0, len(filtered)-1; i < j; i, j = i+1, j-1 {
+		filtered[i], filtered[j] = filtered[j], filtered[i]
+	}
+	writeJSON(conn, DaemonResponse{Code: 0, Data: filtered})
+}
+
+func handleGroups(conn net.Conn, a *app.App) {
+	data, err := collectGroupsData(a)
+	if err != nil {
+		writeError(conn, "获取代理组失败: "+err.Error())
+		return
+	}
+	writeJSON(conn, DaemonResponse{Code: 0, Data: data})
+}
+
+func handleSwitchNode(conn net.Conn, a *app.App, raw json.RawMessage) {
+	if !isCoreRunning(a) {
+		writeError(conn, "核心未运行，无法切换节点")
+		return
+	}
+	var params SwitchNodeParams
+	if err := json.Unmarshal(raw, &params); err != nil {
+		writeError(conn, "参数错误: "+err.Error())
+		return
+	}
+	if params.GroupName == "" || params.ProxyName == "" {
+		writeError(conn, "代理组和节点不能为空")
+		return
+	}
+	if err := action.SwitchNode(a, params.GroupName, params.ProxyName); err != nil {
+		writeError(conn, "切换失败: "+err.Error())
+		return
+	}
+	a.StateStore.Save()
+	writeJSON(conn, DaemonResponse{Code: 0, Data: fmt.Sprintf("%s 已切换至: %s", params.GroupName, params.ProxyName)})
+}
+
+func handleTestGroupDelay(conn net.Conn, a *app.App, raw json.RawMessage) {
+	if !isCoreRunning(a) {
+		writeError(conn, "核心未运行，无法测试延迟")
+		return
+	}
+	var params TestGroupDelayParams
+	if err := json.Unmarshal(raw, &params); err != nil {
+		writeError(conn, "参数错误: "+err.Error())
+		return
+	}
+	if params.GroupName == "" {
+		writeError(conn, "代理组不能为空")
+		return
+	}
+	testURL := params.TestURL
+	if testURL == "" {
+		testURL = "https://www.gstatic.com/generate_204"
+	}
+	if err := action.TestGroupDelay(a, params.GroupName, testURL); err != nil {
+		writeError(conn, "测试延迟失败: "+err.Error())
+		return
+	}
+	detail := a.State.GetGroupDetail(params.GroupName)
+	success, failed := countDelayResults(detail)
+	writeJSON(conn, DaemonResponse{Code: 0, Data: fmt.Sprintf("%s 延迟测试完成：成功 %d 个，失败 %d 个", params.GroupName, success, failed)})
+}
+
+func handleMode(conn net.Conn, a *app.App, raw json.RawMessage) {
+	var params ModeParams
+	if err := json.Unmarshal(raw, &params); err != nil {
+		writeError(conn, "参数错误: "+err.Error())
+		return
+	}
+
+	next, err := parseMode(params.Mode)
+	if err != nil {
+		writeError(conn, err.Error())
+		return
+	}
+
+	prefs := a.StateStore.Get()
+	old := prefs.Mode
+	if old == next {
+		writeJSON(conn, DaemonResponse{Code: 0, Data: "运行模式未变化: " + util.FormatMode(string(next))})
+		return
+	}
+
+	a.StateStore.SetMode(next)
+	if err := a.StateStore.Save(); err != nil {
+		writeError(conn, "保存运行模式失败: "+err.Error())
+		return
+	}
+
+	if isCoreRunning(a) {
+		profile := a.ProfileStore.GetManifest().GetCurrentProfile()
+		if profile == nil {
+			a.StateStore.SetMode(old)
+			a.StateStore.Save()
+			writeError(conn, "当前没有可用配置，无法应用运行模式")
+			return
+		}
+		if err := action.ApplyProfile(a, profile); err != nil {
+			a.StateStore.SetMode(old)
+			a.StateStore.Save()
+			if restoreErr := action.ApplyProfile(a, profile); restoreErr != nil {
+				writeError(conn, fmt.Sprintf("应用运行模式失败，已回滚配置但恢复旧模式也失败: %v; 原错误: %v", restoreErr, err))
+				return
+			}
+			writeError(conn, "应用运行模式失败，已回滚到原模式: "+err.Error())
+			return
+		}
+	}
+
+	writeJSON(conn, DaemonResponse{Code: 0, Data: "运行模式已切换为: " + util.FormatMode(string(next))})
+}
+
+func handleImportURL(conn net.Conn, a *app.App, raw json.RawMessage) {
+	var params ImportURLParams
+	if err := json.Unmarshal(raw, &params); err != nil {
+		writeError(conn, "参数错误: "+err.Error())
+		return
+	}
+	params.URL = strings.TrimSpace(params.URL)
+	if params.URL == "" {
+		writeError(conn, "订阅 URL 不能为空")
+		return
+	}
+
+	profile, err := action.ImportFromURLWithProxy(a.ProfileStore, params.URL, params.Name, params.AutoApply, profileProxyURL(a))
+	if err != nil {
+		writeError(conn, "URL 导入失败: "+err.Error())
+		return
+	}
+	if err := applyImportedProfile(a, profile, params.AutoApply); err != nil {
+		writeError(conn, "导入成功但应用失败: "+err.Error())
+		return
+	}
+	if err := saveStores(a); err != nil {
+		writeError(conn, "导入成功但保存失败: "+err.Error())
+		return
+	}
+
+	msg := fmt.Sprintf("URL 导入成功: %s", profile.Name)
+	if params.AutoApply {
+		msg += "，已设为当前配置"
+	}
+	writeJSON(conn, DaemonResponse{Code: 0, Data: msg})
+}
+
+func handleImportFile(conn net.Conn, a *app.App, raw json.RawMessage) {
+	var params ImportFileParams
+	if err := json.Unmarshal(raw, &params); err != nil {
+		writeError(conn, "参数错误: "+err.Error())
+		return
+	}
+	params.Path = normalizeImportPath(params.Path)
+	if params.Path == "" {
+		writeError(conn, "文件路径不能为空")
+		return
+	}
+
+	profile, err := action.ImportFromFile(a.ProfileStore, params.Path, params.Name, params.AutoApply)
+	if err != nil {
+		writeError(conn, "文件导入失败: "+err.Error())
+		return
+	}
+	if err := applyImportedProfile(a, profile, params.AutoApply); err != nil {
+		writeError(conn, "导入成功但应用失败: "+err.Error())
+		return
+	}
+	if err := saveStores(a); err != nil {
+		writeError(conn, "导入成功但保存失败: "+err.Error())
+		return
+	}
+
+	msg := fmt.Sprintf("文件导入成功: %s", profile.Name)
+	if params.AutoApply {
+		msg += "，已设为当前配置"
+	}
+	writeJSON(conn, DaemonResponse{Code: 0, Data: msg})
+}
+
+func handleUpdateSubscription(conn net.Conn, a *app.App, raw json.RawMessage) {
+	var params UpdateSubscriptionParams
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &params); err != nil {
+			writeError(conn, "参数错误: "+err.Error())
+			return
+		}
+	}
+
+	current := a.ProfileStore.GetManifest().GetCurrentProfile()
+	if current == nil {
+		writeError(conn, "当前没有可更新的配置")
+		return
+	}
+	if current.Type != model.ProfileTypeURL {
+		writeError(conn, "当前配置不是订阅 URL 类型，无法更新")
+		return
+	}
+
+	profile, err := action.ImportFromURLWithProxy(a.ProfileStore, current.Source, current.Name, false, profileProxyURL(a))
+	if err != nil {
+		writeError(conn, "订阅更新失败: "+err.Error())
+		return
+	}
+	if err := applyImportedProfile(a, profile, params.AutoApply); err != nil {
+		writeError(conn, "订阅更新成功但应用失败: "+err.Error())
+		return
+	}
+	if err := saveStores(a); err != nil {
+		writeError(conn, "订阅更新成功但保存失败: "+err.Error())
+		return
+	}
+
+	msg := fmt.Sprintf("订阅更新成功: %s", profile.Name)
+	if params.AutoApply {
+		msg += "，已重新应用"
+	}
+	writeJSON(conn, DaemonResponse{Code: 0, Data: msg})
+}
+
+func handleProfiles(conn net.Conn, a *app.App) {
+	manifest := a.ProfileStore.GetManifest()
+	data := ProfilesData{
+		CurrentProfileID: manifest.CurrentProfileID,
+		Profiles:         make([]ProfileSummaryData, 0, len(manifest.Profiles)),
+	}
+	if current := manifest.GetCurrentProfile(); current != nil {
+		data.CurrentProfileName = current.Name
+	}
+	for _, profile := range manifest.Profiles {
+		data.Profiles = append(data.Profiles, ProfileSummaryData{
+			ID:      profile.ID,
+			Name:    profile.Name,
+			Type:    profile.Type,
+			Source:  profile.Source,
+			Current: profile.ID == manifest.CurrentProfileID,
+		})
+	}
+	writeJSON(conn, DaemonResponse{Code: 0, Data: data})
+}
+
+func handleSwitchProfile(conn net.Conn, a *app.App, raw json.RawMessage) {
+	var params SwitchProfileParams
+	if err := json.Unmarshal(raw, &params); err != nil {
+		writeError(conn, "参数错误: "+err.Error())
+		return
+	}
+	if params.ProfileID == 0 {
+		writeError(conn, "配置 ID 不能为空")
+		return
+	}
+
+	manifest := a.ProfileStore.GetManifest()
+	profile := manifest.GetProfile(params.ProfileID)
+	if profile == nil {
+		writeError(conn, "配置不存在")
+		return
+	}
+	if manifest.CurrentProfileID == profile.ID {
+		writeJSON(conn, DaemonResponse{Code: 0, Data: fmt.Sprintf("当前已经是配置: %s", profile.Name)})
+		return
+	}
+
+	if isCoreRunning(a) {
+		if err := action.SwitchProfile(a, profile); err != nil {
+			writeError(conn, err.Error())
+			return
+		}
+	} else {
+		a.ProfileStore.SetCurrent(profile.ID)
+		a.StateStore.SetCurrentProfileID(profile.ID)
+	}
+	if err := saveStores(a); err != nil {
+		writeError(conn, "配置已切换但保存失败: "+err.Error())
+		return
+	}
+	writeJSON(conn, DaemonResponse{Code: 0, Data: fmt.Sprintf("当前配置已切换为: %s", profile.Name)})
+}
+
+func handleDeleteProfile(conn net.Conn, a *app.App, raw json.RawMessage) {
+	var params DeleteProfileParams
+	if err := json.Unmarshal(raw, &params); err != nil {
+		writeError(conn, "参数错误: "+err.Error())
+		return
+	}
+	if params.ProfileID == 0 {
+		writeError(conn, "配置 ID 不能为空")
+		return
+	}
+
+	manifest := a.ProfileStore.GetManifest()
+	if len(manifest.Profiles) <= 1 {
+		writeError(conn, "不能删除最后一个配置")
+		return
+	}
+	if manifest.CurrentProfileID == params.ProfileID {
+		writeError(conn, "不能删除当前配置，请先切换到其他配置")
+		return
+	}
+
+	profilePtr := manifest.GetProfile(params.ProfileID)
+	if profilePtr == nil {
+		writeError(conn, "配置不存在")
+		return
+	}
+	profile := *profilePtr
+
+	a.ProfileStore.RemoveProfile(profile.ID)
+	if err := saveStores(a); err != nil {
+		a.ProfileStore.AddProfile(profile)
+		writeError(conn, "删除配置失败，保存配置列表失败: "+err.Error())
+		return
+	}
+
+	if isManagedProfileFile(profile.FilePath) {
+		if err := os.Remove(profile.FilePath); err != nil && !os.IsNotExist(err) {
+			writeJSON(conn, DaemonResponse{Code: 0, Data: fmt.Sprintf("配置已删除: %s；但缓存文件删除失败: %v", profile.Name, err)})
+			return
+		}
+		writeJSON(conn, DaemonResponse{Code: 0, Data: fmt.Sprintf("配置已删除: %s，缓存文件已清理", profile.Name)})
+		return
+	}
+
+	writeJSON(conn, DaemonResponse{Code: 0, Data: fmt.Sprintf("配置已删除: %s", profile.Name)})
+}
+
+func applyImportedProfile(a *app.App, profile *model.ProfileRecord, autoApply bool) error {
+	if !autoApply {
+		return nil
+	}
+	if isCoreRunning(a) {
+		return action.SwitchProfile(a, profile)
+	}
+	a.ProfileStore.SetCurrent(profile.ID)
+	a.StateStore.SetCurrentProfileID(profile.ID)
+	return nil
+}
+
+func saveStores(a *app.App) error {
+	if err := a.ProfileStore.Save(); err != nil {
+		return err
+	}
+	return a.StateStore.Save()
+}
+
+func profileProxyURL(a *app.App) string {
+	if !isCoreRunning(a) {
+		return ""
+	}
+	prefs := a.StateStore.Get()
+	if prefs.MixedPort <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("http://127.0.0.1:%d", prefs.MixedPort)
+}
+
+func normalizeImportPath(path string) string {
+	path = strings.TrimSpace(path)
+	if strings.HasPrefix(path, "root/") {
+		return "/" + path
+	}
+	return path
+}
+
+func collectGroupsData(a *app.App) (GroupsData, error) {
+	if !isCoreRunning(a) {
+		return GroupsData{
+			Groups:  []model.GroupSummary{},
+			Details: map[string]*model.GroupDetail{},
+		}, nil
+	}
+
+	if err := action.RefreshGroups(a); err != nil {
+		return GroupsData{}, err
+	}
+
+	groups := a.State.GetGroups()
+	details := make(map[string]*model.GroupDetail, len(groups))
+	for _, group := range groups {
+		detail := a.State.GetGroupDetail(group.Name)
+		if detail != nil {
+			details[group.Name] = cloneGroupDetail(detail)
+		}
+	}
+
+	var globalOptions []model.GroupNode
+	if detail := details["GLOBAL"]; detail != nil {
+		globalOptions = action.BuildGlobalExitOptions(groups, detail)
+	}
+
+	return GroupsData{
+		Groups:        groups,
+		Details:       details,
+		GlobalOptions: globalOptions,
+	}, nil
+}
+
+func countDelayResults(detail *model.GroupDetail) (int, int) {
+	if detail == nil {
+		return 0, 0
+	}
+	success := 0
+	for _, node := range detail.Nodes {
+		if node.Delay > 0 {
+			success++
+		}
+	}
+	return success, len(detail.Nodes) - success
+}
+
+func isKeyLog(entry model.LogEntry) bool {
+	switch strings.ToLower(strings.TrimSpace(entry.Type)) {
+	case "warning", "warn", "error", "fatal", "panic":
+		return true
+	default:
+		return false
+	}
+}
+
+func isManagedProfileFile(filePath string) bool {
+	if filePath == "" {
+		return false
+	}
+
+	profilesDir, err := filepath.Abs(filepath.Join(storage.GetDataDir(), "profiles"))
+	if err != nil {
+		return false
+	}
+	target, err := filepath.Abs(filepath.Clean(filePath))
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(profilesDir, target)
+	if err != nil {
+		return false
+	}
+	return rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))
+}
+
+func cloneGroupDetail(detail *model.GroupDetail) *model.GroupDetail {
+	if detail == nil {
+		return nil
+	}
+	nodes := make([]model.GroupNode, len(detail.Nodes))
+	copy(nodes, detail.Nodes)
+	return &model.GroupDetail{
+		Name:  detail.Name,
+		Type:  detail.Type,
+		Now:   detail.Now,
+		Nodes: nodes,
+	}
+}
+
+func parseMode(mode string) (model.Mode, error) {
+	switch mode {
+	case string(model.ModeRule):
+		return model.ModeRule, nil
+	case string(model.ModeGlobal):
+		return model.ModeGlobal, nil
+	case string(model.ModeDirect):
+		return model.ModeDirect, nil
+	default:
+		return "", fmt.Errorf("无效运行模式: %s", mode)
+	}
+}
+
+func isCoreRunning(a *app.App) bool {
+	return a.CoreClient != nil && a.CoreClient.Status() == coreclient.StatusRunning
+}
+
+func writeJSON(conn net.Conn, resp DaemonResponse) {
+	data, _ := json.Marshal(resp)
+	conn.Write(data)
+	conn.Write([]byte("\n"))
+}
+
+func writeError(conn net.Conn, msg string) {
+	writeJSON(conn, DaemonResponse{Code: -1, Error: msg})
+}
+
+func removeSocket(path string) error {
+	if _, err := os.Stat(path); err == nil {
+		return os.Remove(path)
+	}
+	return nil
+}
