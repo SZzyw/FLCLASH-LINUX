@@ -3,11 +3,14 @@ package action
 import (
 	"fmt"
 	"sort"
+	"sync"
 
 	"flclash-headless/app"
 	"flclash-headless/coreclient"
 	"flclash-headless/model"
 )
+
+const delayTestConcurrency = 8
 
 var groupTypes = map[string]bool{
 	"Selector":    true,
@@ -83,6 +86,7 @@ func RefreshGroups(a *app.App) error {
 				}
 				node := model.GroupNode{
 					Name:  nodeName,
+					Type:  getProxyType(proxies, nodeName),
 					Delay: delay,
 					Now:   nodeName == currentNow,
 				}
@@ -119,6 +123,21 @@ func groupDelayMap(detail *model.GroupDetail) map[string]int {
 		}
 	}
 	return delays
+}
+
+func getProxyType(proxies *coreclient.ProxiesData, name string) string {
+	if proxies == nil {
+		return ""
+	}
+	proxyRaw, ok := proxies.Proxies[name]
+	if !ok {
+		return ""
+	}
+	proxyMap, ok := proxyRaw.(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	return getStringField(proxyMap, "type")
 }
 
 func SwitchNode(a *app.App, groupName, proxyName string) error {
@@ -205,15 +224,50 @@ func TestGroupDelay(a *app.App, groupName, testUrl string) error {
 	if detail == nil {
 		return nil
 	}
+	if len(detail.Nodes) == 0 {
+		a.State.SetGroupDetail(detail)
+		return nil
+	}
+
+	type delayResult struct {
+		index int
+		delay int
+	}
+
+	workerCount := delayTestConcurrency
+	if len(detail.Nodes) < workerCount {
+		workerCount = len(detail.Nodes)
+	}
+
+	jobs := make(chan int)
+	results := make(chan delayResult, len(detail.Nodes))
+	var wg sync.WaitGroup
+
+	for i := 0; i < workerCount; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for index := range jobs {
+				delay, err := a.CoreClient.TestDelay(testUrl, detail.Nodes[index].Name)
+				if err != nil || delay <= 0 {
+					delay = -1
+				}
+				results <- delayResult{index: index, delay: delay}
+			}
+		}()
+	}
 
 	for i := range detail.Nodes {
-		delay, err := a.CoreClient.TestDelay(testUrl, detail.Nodes[i].Name)
-		if err == nil && delay > 0 {
-			detail.Nodes[i].Delay = delay
-		} else {
-			detail.Nodes[i].Delay = -1
-		}
+		jobs <- i
 	}
+	close(jobs)
+	wg.Wait()
+	close(results)
+
+	for result := range results {
+		detail.Nodes[result.index].Delay = result.delay
+	}
+
 	a.State.SetGroupDetail(detail)
 	return nil
 }

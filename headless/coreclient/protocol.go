@@ -1,22 +1,29 @@
 package coreclient
 
+import (
+	"fmt"
+	"sync/atomic"
+)
+
 type ActionMethod string
 
+var actionSeq uint64
+
 const (
-	ActionInitClash      ActionMethod = "initClash"
-	ActionShutdown       ActionMethod = "shutdown"
-	ActionValidateConfig ActionMethod = "validateConfig"
-	ActionSetupConfig    ActionMethod = "setupConfig"
-	ActionGetConfig      ActionMethod = "getConfig"
-	ActionGetProxies     ActionMethod = "getProxies"
-	ActionChangeProxy    ActionMethod = "changeProxy"
-	ActionGetTraffic     ActionMethod = "getTraffic"
+	ActionInitClash       ActionMethod = "initClash"
+	ActionShutdown        ActionMethod = "shutdown"
+	ActionValidateConfig  ActionMethod = "validateConfig"
+	ActionSetupConfig     ActionMethod = "setupConfig"
+	ActionGetConfig       ActionMethod = "getConfig"
+	ActionGetProxies      ActionMethod = "getProxies"
+	ActionChangeProxy     ActionMethod = "changeProxy"
+	ActionGetTraffic      ActionMethod = "getTraffic"
 	ActionGetTotalTraffic ActionMethod = "getTotalTraffic"
-	ActionStartLog       ActionMethod = "startLog"
-	ActionStopLog        ActionMethod = "stopLog"
-	ActionStartListener  ActionMethod = "startListener"
-	ActionStopListener   ActionMethod = "stopListener"
-	ActionAsyncTestDelay ActionMethod = "asyncTestDelay"
+	ActionStartLog        ActionMethod = "startLog"
+	ActionStopLog         ActionMethod = "stopLog"
+	ActionStartListener   ActionMethod = "startListener"
+	ActionStopListener    ActionMethod = "stopListener"
+	ActionAsyncTestDelay  ActionMethod = "asyncTestDelay"
 )
 
 type ResultType int
@@ -27,16 +34,16 @@ const (
 )
 
 type Action struct {
-	ID     string        `json:"id"`
-	Method ActionMethod  `json:"method"`
-	Data   interface{}   `json:"data"`
+	ID     string       `json:"id"`
+	Method ActionMethod `json:"method"`
+	Data   interface{}  `json:"data"`
 }
 
 type ActionResult struct {
-	ID     string      `json:"id"`
+	ID     string       `json:"id"`
 	Method ActionMethod `json:"method"`
-	Data   interface{} `json:"data"`
-	Code   ResultType  `json:"code"`
+	Data   interface{}  `json:"data"`
+	Code   ResultType   `json:"code"`
 }
 
 type SetupParams struct {
@@ -66,8 +73,9 @@ type ProxiesData struct {
 }
 
 func NewAction(method ActionMethod, data interface{}) Action {
+	seq := atomic.AddUint64(&actionSeq, 1)
 	return Action{
-		ID:     string(method),
+		ID:     fmt.Sprintf("%s-%d", method, seq),
 		Method: method,
 		Data:   data,
 	}

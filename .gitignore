@@ -1,70 +1,52 @@
-# Miscellaneous
-*.class
-*.log
-*.pyc
-*.swp
-.DS_Store
-.atom/
-.build/
-.buildlog/
-.history
-.svn/
-.swiftpm/
-migrate_working_dir/
+# Go 编译产物
+*.exe*
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+*.o
+*.a
+*.prof
 
-# IntelliJ related
+# Go 二进制
+/headless/flclash-headless
+/core/core
+
+# 运行时数据（可能包含凭证）
+/assets/data/cache.db
+/assets/data/cache/
+/assets/data/config.yaml
+/assets/data/profiles.json
+/assets/data/profiles/
+/assets/data/state.json
+/assets/data/logs/
+/assets/data/providers/
+
+# IDE
+.idea/
 *.iml
 *.ipr
 *.iws
-.idea/
-
-# The .vscode folder contains launch configuration and tasks you configure in
-# VS Code which you may wish to be included in version control, so this line
-# is commented out by default.
 .vscode/
 
-# Flutter/Dart/Pub related
-**/doc/api/
-**/ios/Flutter/.last_build_id
-.dart_tool/
-.flutter-plugins
-.flutter-plugins-dependencies
-.packages
-.pub-cache/
-.pub/
-/build/
-/dist/
+# OS
+.DS_Store
+Thumbs.db
 
-# Symbolication related
-app.*.symbols
+# 编辑器临时文件
+*.swp
+*.swo
+*~
 
-# Obfuscation related
-app.*.map.json
+# 日志
+*.log
 
-#AI generated
+# Python
+*.pyc
+__pycache__/
+
+# AI generated
 CLAUDE.md
 /.claude
-
-
-# Android Studio will place build artifacts here
-/android/app/debug
-/android/app/profile
-/android/app/release
-/android/**/.cxx
-/android/**/build
-/android/common/**/.**/
-/android/common/local.*
-/android/core/**/includes/
-/android/core/**/cmake-build-*/
-/android/core/**/jniLibs/
-
-#FlClash
-/libclash/
-/android/app/src/main/jniLibs/
-/services/helper/target
-/macos/**/Package.resolved
-devtools_options.yaml
-
-# FVM Version Cache
-.fvm/
-.fvmrc
+/.agents

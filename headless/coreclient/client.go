@@ -17,10 +17,10 @@ import (
 type CoreStatus string
 
 const (
-	StatusStopped      CoreStatus = "stopped"
-	StatusStarting     CoreStatus = "starting"
-	StatusRunning      CoreStatus = "running"
-	StatusError        CoreStatus = "error"
+	StatusStopped  CoreStatus = "stopped"
+	StatusStarting CoreStatus = "starting"
+	StatusRunning  CoreStatus = "running"
+	StatusError    CoreStatus = "error"
 )
 
 type CoreEventListener func(event CoreEvent)
@@ -203,10 +203,16 @@ func (c *Client) SendAction(action Action, timeout time.Duration) (*ActionResult
 	conn := c.conn
 	c.mu.RUnlock()
 	if conn == nil {
+		c.pendingMu.Lock()
+		delete(c.pending, action.ID)
+		c.pendingMu.Unlock()
 		return nil, fmt.Errorf("not connected")
 	}
 
 	if _, err := fmt.Fprintln(conn, string(data)); err != nil {
+		c.pendingMu.Lock()
+		delete(c.pending, action.ID)
+		c.pendingMu.Unlock()
 		return nil, fmt.Errorf("send: %w", err)
 	}
 

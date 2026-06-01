@@ -467,7 +467,13 @@ func handleTestGroupDelay(conn net.Conn, a *app.App, raw json.RawMessage) {
 	}
 	detail := a.State.GetGroupDetail(params.GroupName)
 	success, failed := countDelayResults(detail)
-	writeJSON(conn, DaemonResponse{Code: 0, Data: fmt.Sprintf("%s 延迟测试完成：成功 %d 个，失败 %d 个", params.GroupName, success, failed)})
+	message := fmt.Sprintf("%s 延迟测试完成：成功 %d 个，失败 %d 个", params.GroupName, success, failed)
+	if success == 0 && failed > 0 && a.CoreClient != nil {
+		if directDelay, err := a.CoreClient.TestDelay(testURL, "DIRECT"); err == nil && directDelay > 0 {
+			message = fmt.Sprintf("%s；DIRECT %d ms，测试 URL 可达，代理节点全部超时，请检查订阅节点或当前网络是否能连接节点服务器", message, directDelay)
+		}
+	}
+	writeJSON(conn, DaemonResponse{Code: 0, Data: message})
 }
 
 func handleMode(conn net.Conn, a *app.App, raw json.RawMessage) {
